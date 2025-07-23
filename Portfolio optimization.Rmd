@@ -1,0 +1,1380 @@
+---
+title: "4030 FINAL"
+author: "Melanie"
+date: "2025-04-12"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## **#Introduction: Bayesian Portfolio Optimization**
+
+In this case study, we explore how Bayesian inference can guide
+portfolio decisions under uncertainty. The investor manages a portfolio
+of three assets — Stock, Bond, and Gold — whose returns are assumed to
+follow a multivariate normal distribution. However, the true mean return
+vector (𝜇) and covariance matrix (𝛴) are unknown. To estimate these
+parameters, we model 𝜇 with a multivariate normal prior and 𝛴 with an
+Inverse-Wishart prior. Using historical return data, we implement Gibbs
+sampling to draw posterior samples from the joint distribution of 𝜇 and
+𝛴, allowing the investor to account for market volatility and
+inter-asset correlations.
+
+To strengthen and validate our inference, we also incorporate the
+Metropolis-Hastings (MH) algorithm as a secondary sampling technique to
+cross-check and refine our estimates. This combination of MCMC methods
+ensures robustness in capturing the posterior uncertainty of key
+portfolio parameters. Finally, we use the inferred posterior
+distributions to simulate portfolio performance under different market
+conditions. This enables the investor to make more informed decisions,
+assess risk exposure, and consider metrics such as the Sharpe ratio or
+when adjusting asset allocation strategies.
+
+#### #QUESTION 1:Use Gibbs sampling to draw posterior samples for 𝜇 and 𝛴.
+
+#Load Libraries and Input Data
+
+In Chunk 1, we load necessary libraries:
+
+MASS for generating multivariate normal samples, ggplot2 for plotting,
+coda for MCMC diagnostics, and gridExtra for arranging multiple plots.
+
+We then create a matrix R containing return data for three assets —
+Stock, Bond, and Gold — with each row representing an observation across
+time.
+
+Column names are assigned for clarity in further analysis.
+
+```{r}
+
+# Load required libraries
+library(MASS)      # for mvrnorm
+library(ggplot2)   # for plotting
+library(coda)      # for MCMC diagnostics
+library(gridExtra) # for arranging plots
+library(mvtnorm)
+
+# Input your observed return data
+R <- matrix(c(
+  0.05, 0.02, 0.03,
+  0.07, 0.03, 0.04,
+  0.06, 0.01, 0.05,
+  0.08, 0.04, 0.02
+), nrow = 4, byrow = TRUE)
+
+colnames(R) <- c("Stock", "Bond", "Gold")
+
+
+
+```
+
+#Initialize Priors and Gibbs Sampler Setup
+
+This chunk sets up the necessary components for implementing Gibbs
+sampling in the Bayesian portfolio optimization model.
+
+It begins by determining the number of assets and observations in the
+return data matrix. Next, it defines the prior hyperparameters: a
+zero-mean multivariate normal prior for the mean vector (𝜇), and an
+Inverse-Wishart prior for the covariance matrix (𝛴) using an identity
+matrix as the scale parameter.
+
+The Gibbs sampling configuration is then established by specifying the
+number of iterations to run.
+
+Finally, storage structures for the posterior samples of 𝜇 and 𝛴 are
+initialized, and the sampler is seeded for reproducibility. The initial
+values for 𝜇 and 𝛴 are set using the sample mean and an identity matrix,
+respectively, to start the Gibbs sampling process.
+
+```{r}
+# Number of assets and periods
+n <- nrow(R)
+p <- ncol(R)
+
+# Prior hyperparameters
+mu_0 <- rep(0, p)         # Prior mean for mu
+Lambda_0 <- diag(p)       # Prior precision (inverse covariance) for mu
+S_0 <- diag(p)            # Scale matrix for Inverse-Wishart prior
+nu_0 <- p + 1             # Degrees of freedom for Inverse-Wishart prior
+
+# Gibbs sampling settings
+n_iter <- 50000
+
+# Store results
+mu_samples <- matrix(NA, nrow = n_iter, ncol = p)        # 2D matrix for μ
+Sigma_samples <- array(NA, dim = c(p, p, n_iter))        # 3D array for Σ
+
+# Initialize values
+set.seed(123)  # For reproducibility
+mu_samples[1, ] <- colMeans(R)
+Sigma_samples[, , 1] <- diag(p)
+
+
+
+```
+
+#Gibbs Sampling Loop
+
+```{r}
+# Ensure these are defined before this chunk:
+# n_iter <- 50000
+# p <- ncol(R)
+# mu_samples <- matrix(NA, nrow = n_iter, ncol = p)
+# Sigma_samples <- array(NA, dim = c(p, p, n_iter))
+# mu_samples[1, ] <- colMeans(R)
+# Sigma_samples[, , 1] <- diag(p)
+
+for (iter in 2:n_iter) {
+  # Get previous Sigma
+  Sigma_prev <- Sigma_samples[, , iter - 1]
+
+  # Sample mu | Sigma, R
+  Sigma_n <- solve(solve(Lambda_0) + n * solve(Sigma_prev))
+  mu_n <- Sigma_n %*% (solve(Lambda_0) %*% mu_0 + solve(Sigma_prev) %*% colSums(R))
+  mu_samples[iter, ] <- mvrnorm(1, mu = mu_n, Sigma = Sigma_n)
+
+  # Sample Sigma | mu, R
+  diff <- R - matrix(mu_samples[iter, ], nrow = n, ncol = p, byrow = TRUE)
+  S_n <- S_0 + t(diff) %*% diff
+  nu_n <- nu_0 + n
+  Sigma_samples[, , iter] <- solve(rWishart(1, df = nu_n, Sigma = solve(S_n))[,,1])
+}
+
+
+
+
+```
+
+#Trace Plots for Posterior Means (μ)
+
+This chunk performs Gibbs sampling by iteratively updating the posterior
+distributions of the mean vector (𝜇) and covariance matrix (𝛴) based on
+their conditional distributions.
+
+It then generates trace plots for each element of 𝜇 (Stock, Bond, and
+Gold) after discarding the burn-in period, allowing for visual
+assessment of convergence and sampling stability across the remaining
+iterations.
+
+```{r}
+# Set burn-in threshold
+burn_in <- 10000
+
+# Subset mu_samples to exclude burn-in
+mu_df <- data.frame(
+  Iteration = (burn_in + 1):n_iter,
+  Stock = mu_samples[(burn_in + 1):n_iter, 1],
+  Bond  = mu_samples[(burn_in + 1):n_iter, 2],
+  Gold  = mu_samples[(burn_in + 1):n_iter, 3]
+)
+
+# Melt for ggplot
+library(reshape2)
+mu_melt <- melt(mu_df, id.vars = "Iteration")
+
+# Generate trace plots (post burn-in)
+library(ggplot2)
+mu_trace_plots <- lapply(unique(mu_melt$variable), function(asset) {
+  ggplot(mu_melt[mu_melt$variable == asset, ], aes(x = Iteration, y = value)) +
+    geom_line(color = "steelblue", alpha = 0.6) +
+    labs(title = paste("Trace Plot for μ -", asset, "(Post Burn-in)"),
+         y = "Value", x = "Iteration") +
+    theme_minimal()
+})
+
+# Display all 3 plots
+library(gridExtra)
+grid.arrange(grobs = mu_trace_plots, ncol = 1)
+
+```
+
+#Stock – Stable Around Positive Mean
+
+The trace for Stock fluctuates tightly around a stable central band,
+which suggests excellent convergence.
+
+There is no visible trend over time, and the values oscillate evenly,
+showing that the sampling chain has fully explored the posterior.
+
+The expected return is clearly positive, and the consistency of the
+trace confirms that the return estimate for Stock is reliable and
+robust.
+
+# Investor insight:
+
+Stock is the growth driver in the portfolio.
+
+Its high and stable expected return justifies allocating a larger weight
+to this asset — especially for risk-tolerant or long-term investors.
+
+# 2. Bond – Lower Mean, Tightest Spread
+
+The Bond trace is centered much lower than Stock — indicating a lower
+expected return.
+
+However, it also exhibits the least vertical variability, meaning the
+posterior distribution is very concentrated.
+
+The sampling distribution is precise and shows little uncertainty, which
+is typical for assets like bonds that offer more stable but modest
+returns.
+
+# Investor insight:
+
+Bonds offer predictability and stability, which is valuable for
+risk-averse investors or for balancing a volatile portfolio.
+
+Despite low returns, they serve as a buffer during downturns.
+
+# 3. Gold – Slightly More Volatile Posterior
+
+The Gold trace plot is well-centered, but it shows slightly more noise
+compared to Stock and Bond.
+
+This indicates that the expected return is moderately positive, but the
+sampler experienced marginally more uncertainty about the value.
+
+Still, the trace is stable and exhibits convergence, so the estimate is
+usable — just with a bit more caution.
+
+# Investor insight:
+
+Gold is acting like a diversifier. It doesn't lead the portfolio in
+terms of return, but its unique movement (often uncorrelated or
+negatively correlated with stocks) makes it useful in risk management.
+
+#Trace Plots for Variances and Covariances (Post Burn-in)
+
+This chunk generates trace plots for the variances and covariances of
+the assets after discarding the burn-in period.
+
+First, it subsets the posterior samples of the covariance matrix (Σ) to
+exclude the first 10,000 iterations.
+
+It then extracts the diagonal elements (variances) for Stock, Bond, and
+Gold across the remaining iterations and reshapes the data for plotting.
+
+Each variance is visualized in a separate trace plot to assess sampling
+stability and convergence.
+
+Similarly, the off-diagonal elements (covariances) between each asset
+pair — Stock-Bond, Stock-Gold, and Bond-Gold — are extracted and
+reshaped for plotting.
+
+Finally, the script displays the variance and covariance trace plots
+using grid.arrange(), providing visual insight into how the uncertainty
+in these parameters evolves throughout the sampling process.
+
+```{r}
+# Set burn-in
+burn_in <- 10000
+
+# Subset Sigma_samples to exclude burn-in
+Sigma_post_burn <- Sigma_samples[, , (burn_in + 1):n_iter]
+
+# Get variance trace data
+var_trace <- data.frame(
+  Iteration = (burn_in + 1):n_iter,
+  Stock = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[1, 1, i]),
+  Bond  = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[2, 2, i]),
+  Gold  = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[3, 3, i])
+)
+
+# Melt for plotting
+library(reshape2)
+var_melt <- melt(var_trace, id.vars = "Iteration")
+
+# Plot variance trace plots
+var_plots <- lapply(unique(var_melt$variable), function(asset) {
+  ggplot(var_melt[var_melt$variable == asset, ], aes(x = Iteration, y = value)) +
+    geom_line(color = "darkgreen", alpha = 0.6) +
+    labs(title = paste("Trace Plot for Variance -", asset), y = "Variance", x = "Iteration") +
+    theme_minimal()
+})
+
+# Get covariance trace data
+cov_trace <- data.frame(
+  Iteration = (burn_in + 1):n_iter,
+  "Stock-Bond" = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[1, 2, i]),
+  "Stock-Gold" = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[1, 3, i]),
+  "Bond-Gold" = sapply((burn_in + 1):n_iter, function(i) Sigma_samples[2, 3, i])
+)
+
+# Melt for plotting
+cov_melt <- melt(cov_trace, id.vars = "Iteration")
+
+# Plot covariance trace plots
+cov_plots <- lapply(unique(cov_melt$variable), function(pair) {
+  ggplot(cov_melt[cov_melt$variable == pair, ], aes(x = Iteration, y = value)) +
+    geom_line(color = "purple", alpha = 0.6) +
+    labs(title = paste("Trace Plot for Covariance -", pair), y = "Covariance", x = "Iteration") +
+    theme_minimal()
+})
+
+# Display all plots (you can adjust rows/columns)
+library(gridExtra)
+grid.arrange(grobs = var_plots, ncol = 1)
+grid.arrange(grobs = cov_plots, ncol = 1)
+
+```
+
+#VARIANCE TRACE PLOTS (Diagonal elements of Σ)
+
+#Stock Variance
+
+Trace pattern: The plot oscillates around a consistent level (close to
+\~0.3) but shows occasional large spikes (e.g., above 20).
+
+Interpretation: Despite the occasional outliers, the overall chain
+appears to have reached stationarity. The spikes likely represent
+momentary sampling noise but do not derail convergence.
+
+Investor insight: The estimated variance for Stock is generally stable
+and moderate, reflecting consistent volatility — with rare periods of
+extreme fluctuation captured by outliers.
+
+# Bond Variance
+
+Trace pattern: Very similar to Stock — the trace is mostly flat with
+brief upward bursts near iterations \~15,000, \~30,000, and \~40,000.
+
+Interpretation: The chain is mixing well overall. The spikes may come
+from the inverse-Wishart draw occasionally hitting high-variance samples
+due to stochastic variation.
+
+Investor insight: Bonds are still estimated to have relatively low and
+consistent volatility, which supports their role as a stabilizing asset
+— though extreme scenarios are being accounted for.
+
+# Gold Variance
+
+Trace pattern: Again centered consistently around a baseline (\~0.3),
+but with more visible spikes compared to Stock and Bond.
+
+Interpretation: Slightly higher variability in the Gold variance trace
+indicate r that the posterior distribution is heavier-tailed.
+
+Investor insight: Gold may exhibit more unpredictable volatility than
+the other assets, which justifies its use for hedging — but investors
+must factor in the possibility of short-term instability.
+
+# COVARIANCE TRACE PLOTS (Off-diagonal elements of Σ)
+
+#4 Covariance: Stock-Bond Trace pattern: Centered just below 0,
+oscillating between -5 and +5 with a few spikes.
+
+Interpretation: The trace fluctuates but doesn’t trend — indicating the
+covariance is being sampled from a stable distribution. However, it’s
+close to zero, implying near independence.
+
+Investor insight: Stock and Bond are largely uncorrelated, which is
+beneficial for diversification — movements in one are unlikely to
+consistently predict the other.
+
+# Covariance: Stock-Gold
+
+Trace pattern: Slightly higher spread than Stock-Bond with isolated high
+spikes (\~+20), though the majority of samples are around zero or
+slightly negative.
+
+Interpretation: This suggests some negative co-movement between Stock
+and Gold, but it’s weak and variable. The large spikes could be
+influenced by rare inverse-Wishart draws.
+
+Investor insight: Gold provides potential hedging benefits in relation
+to Stock, but the covariance is not strong enough to rely on
+consistently negative movement — still, it supports Gold’s inclusion for
+diversification.
+
+# Covariance: Bond-Gold
+
+Trace pattern: Appears more erratic than the other two covariances. It
+occasionally swings both ways, with outliers more frequent and broader
+oscillation range.
+
+Interpretation: Suggests the posterior covariance distribution is wider.
+There’s greater uncertainty in how Bond and Gold move together.
+
+Investor insight:
+
+Investors should treat the relationship between Bond and Gold as weak
+and volatile — at times slightly positive, at times negative. These two
+assets may not co-vary reliably, but that could be good for reducing
+portfolio-wide correlation.
+
+#Posterior Summaries
+
+This chunk calculates and displays the posterior summaries of the model
+parameters after removing the burn-in period.
+
+It computes the posterior mean of the expected returns (μ), the
+covariance matrix (Σ), the individual asset variances (diagonal elements
+of Σ), and the pairwise covariances (off-diagonal elements).
+
+```{r}
+# Set burn-in
+burn_in <- 10000
+
+# 1. Posterior mean of mu (expected returns)
+mu_post_burn <- mu_samples[(burn_in + 1):n_iter, ]
+mu_post_mean <- colMeans(mu_post_burn)
+
+# 2. Posterior mean of Sigma (covariance matrix)
+Sigma_post_burn <- Sigma_samples[, , (burn_in + 1):n_iter]
+Sigma_post_mean <- apply(Sigma_post_burn, c(1, 2), mean)
+
+# 3. Extract variances (diagonal of Sigma)
+variances <- diag(Sigma_post_mean)
+names(variances) <- c("Stock", "Bond", "Gold")
+
+# 4. Extract covariances (off-diagonal of Sigma)
+cov12 <- Sigma_post_mean[1, 2]  # Stock & Bond
+cov13 <- Sigma_post_mean[1, 3]  # Stock & Gold
+cov23 <- Sigma_post_mean[2, 3]  # Bond & Gold
+
+# Display results
+cat("Posterior Mean of μ (Expected Returns):\n")
+print(round(mu_post_mean, 4))
+
+cat("\nPosterior Variances:\n")
+print(round(variances, 4))
+
+cat("\nPosterior Covariances:\n")
+cat("Cov(Stock, Bond):", round(cov12, 4), "\n")
+cat("Cov(Stock, Gold):", round(cov13, 4), "\n")
+cat("Cov(Bond, Gold):", round(cov23, 4), "\n")
+
+cat("\nPosterior Covariance Matrix (Σ):\n")
+colnames(Sigma_post_mean) <- rownames(Sigma_post_mean) <- c("Stock", "Bond", "Gold")
+print(round(Sigma_post_mean, 4))
+
+
+```
+
+Stock: \~5.98%
+
+Bond: \~2.39%
+
+Gold: \~3.22%
+
+Stock has the highest return potential, indicating it's the most
+rewarding investment in this portfolio.
+
+Bond has the lowest expected return, which is typical of safer,
+lower-volatility instruments.
+
+Gold offers moderate return potential, which may reflect its historical
+behavior as a hedge during uncertainty.
+
+These estimates guide strategic asset allocation, where assets with
+higher expected returns are favored for growth, while those with lower
+but more stable returns serve to balance risk.
+
+#Posterior Variances (Risk of Individual Assets)
+
+#Variance of stock 0.3150
+
+A higher variance implies more uncertainty or spread in the returns.
+
+For Stock, 0.3150 is a moderate variance — not overly volatile but also
+not low.
+
+This level of risk is typical for an asset with a higher expected
+return, which often comes with greater uncertainty.
+
+If the investor has a moderate to high risk tolerance, they can assign a
+larger weight to Stock to capitalize on its return, knowing the risk is
+not excessive.
+
+#variance of bond
+
+0.3171 suggests that Bond returns fluctuate just as much as Stock’s.
+
+Given that Bond’s expected return is much lower (\~2.39%) but its
+variance is not, it offers lower reward for the same level of risk.
+
+An investor may decide to assign less weight to Bonds in the portfolio,
+unless stability in return patterns is demonstrated elsewhere (e.g.,
+lower tail risk or favorable correlations).
+
+#Variance of gold
+
+Gold has similar volatility to the other two assets.
+
+Gold, offering a moderate expected return (\~3.22%) and similar
+variance, may serve as a balancing component in the portfolio.
+
+Since Gold had a slightly negative covariance with Stock, it may still
+provide diversification benefit despite having comparable variance.
+
+An investor could consider holding Gold as a hedging asset — one that
+does not reduce overall volatility drastically on its own, but helps
+smooth returns when paired with other assets.
+
+#Covariance: Stock and Bond
+
+The vertical spread is extremely tight, suggesting low variability in
+the covariance samples.
+
+The sampled values mostly oscillate between −0.002 and +0.002, with many
+centered exactly around 0.0001
+
+the lack of covariance means these two assets can coexist in a portfolio
+without amplifying each other’s risk — a great property for
+diversification.
+
+# Covariance: Stock and Gold
+
+The trace shows slightly more vertical fluctuation compared to
+Stock–Bond.
+
+It appears centered slightly below zero, aligning with the posterior
+covariance of −0.0015.
+
+The shape is stable, and fluctuations are consistent
+
+The negative center suggests a mild inverse relationship: when Stock
+returns go up, Gold may slightly decline, and vice versa.
+
+#Covariance: Bond and Gold
+
+This is a small positive covariance, meaning Bond and Gold tend to move
+in the same direction slightly.
+
+The relationship is weak and barely significant, but it implies some
+positive co-movement.
+
+It suggests that pairing Bond and Gold won't increase volatility, but
+they may not offer as much protection from one another’s fluctuations as
+Gold does for Stock.
+
+#Density plot
+
+```{r}
+# Combine μ samples across all 3 assets into one data frame
+mu_df_gibbs <- data.frame(
+  Iteration = 1:n_iter,
+  Stock = mu_samples[, 1],
+  Bond  = mu_samples[, 2],
+  Gold  = mu_samples[, 3]
+)
+
+# Reshape for ggplot
+library(reshape2)
+mu_melt_gibbs <- melt(mu_df_gibbs, id.vars = "Iteration", variable.name = "Asset", value.name = "Value")
+
+# Plot density
+library(ggplot2)
+ggplot(mu_melt_gibbs, aes(x = Value, fill = Asset)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Posterior Density Plot of μ (Expected Returns) - Gibbs Sampler",
+       x = "Value", y = "Density", fill = "Asset") +
+  theme_minimal()
+
+```
+
+# Stock
+
+The red density curve represents the posterior distribution of the
+expected return for Stock.
+
+It is centered slightly above 0, aligning with the posterior mean value
+of approximately 0.0598.
+
+The curve is narrow and tall, indicating low uncertainty — the Gibbs
+sampler is confident in this estimate.
+
+The slight rightward shift suggests Stock has the highest expected
+return among the three, though the difference is small.
+
+# Bond
+
+The green density curve corresponds to Bond's expected return.
+
+It is centered very close to 0, matching its posterior mean of around
+0.0239.
+
+Like Stock, the density is tight, suggesting a precise estimate.
+
+Bond has the lowest expected return, but the overlap with other curves
+shows this difference is not statistically significant — the assets are
+quite similar in return expectation under this model.
+
+#Gold The blue density curve shows Gold’s expected return, also slightly
+above 0, with a mean around 0.0322.
+
+The curve is almost identical in shape and position to the others,
+indicating that Gold’s posterior uncertainty is similar.
+
+It lies between Stock and Bond in terms of expected return, but again,
+the differences are subtle and uncertain
+
+## **#QUESTION 2:Implement Metropolis-Hastings to cross-check and refine these estimates.**
+
+The Metropolis-Hastings algorithm is an MCMC method used to sample from
+complex distributions. It works by starting with initial parameter
+values and proposing new ones using a probability distribution (e.g.,
+normal). Each proposal is accepted or rejected based on how likely it is
+compared to the current value — using an acceptance ratio. If the new
+value is better, it’s usually accepted; if not, it may still be accepted
+with a small probability. This process repeats for many iterations,
+generating samples that approximate the target posterior distribution.
+
+#Initialization and Setup
+
+This chunk loads required libraries, sets up the number of iterations
+and chains, and initializes storage structures for the
+Metropolis-Hastings sampler using the posterior results from Gibbs as
+starting values for each of the 3 chains.
+
+```{r}
+library(MASS)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(matrixcalc)
+library(mvtnorm)
+
+# Use posterior results from Gibbs as starting points
+mu_init <- mu_post_mean
+Sigma_init <- Sigma_post_mean
+
+n_iter <- 50000
+p <- length(mu_init)
+n_chains <- 3
+
+# Store results for 3 chains
+mu_mh <- array(NA, dim = c(n_iter, p, n_chains))
+Sigma_mh <- array(NA, dim = c(p, p, n_iter, n_chains))
+
+# Set starting values for each chain
+set.seed(123)
+for (chain in 1:n_chains) {
+  mu_mh[1, , chain] <- mu_init
+  Sigma_mh[, , 1, chain] <- Sigma_init
+}
+
+
+```
+
+#Metropolis-Hastings Sampler
+
+This chunk runs the Metropolis-Hastings algorithm by generating
+proposals for the mean vector and covariance matrix at each iteration,
+then accepting or rejecting them based on an acceptance ratio. Unlike
+Gibbs sampling, which draws directly from full conditional
+distributions, MH uses a random-walk proposal mechanism and accepts
+moves probabilistically, allowing it to explore the posterior even when
+conditionals are not easily sampled.
+
+```{r}
+# Proposal step sizes
+mu_proposal_sd <- rep(0.05, p)
+sigma_proposal_sd <- 0.02
+
+log_posterior <- function(mu, Sigma, R) {
+  Sigma <- (Sigma + t(Sigma)) / 2
+  if (!is.positive.definite(Sigma)) return(-Inf)
+  sum(dmvnorm(R, mean = mu, sigma = Sigma, log = TRUE))
+}
+
+# Run MH for each chain
+for (chain in 1:n_chains) {
+  for (i in 2:n_iter) {
+    # Propose new mu
+    mu_prop <- mvrnorm(1, mu = mu_mh[i - 1, , chain], Sigma = diag(mu_proposal_sd^2))
+    
+    # Propose new Sigma
+    eps <- matrix(rnorm(p^2, 0, sigma_proposal_sd), nrow = p)
+    Sigma_prop <- Sigma_mh[, , i - 1, chain] + eps %*% t(eps)
+    
+    # Acceptance ratio
+    log_accept_ratio <- log_posterior(mu_prop, Sigma_prop, R) -
+                        log_posterior(mu_mh[i - 1, , chain], Sigma_mh[, , i - 1, chain], R)
+    
+    # Accept/reject
+    if (log(runif(1)) < log_accept_ratio) {
+      mu_mh[i, , chain] <- mu_prop
+      Sigma_mh[, , i, chain] <- Sigma_prop
+    } else {
+      mu_mh[i, , chain] <- mu_mh[i - 1, , chain]
+      Sigma_mh[, , i, chain] <- Sigma_mh[, , i - 1, chain]
+    }
+  }
+}
+
+
+```
+
+#Trace Plots for Posterior Means (μ)
+
+This chunk reshapes the Metropolis-Hastings samples for the mean vector
+(μ) from all three chains into a single data frame, then generates
+separate trace plots for each asset (Stock, Bond, and Gold). Each plot
+shows how the estimates evolve across iterations, color-coded by chain,
+allowing for a clear visual assessment of convergence and mixing across
+chains.
+
+```{r}
+# Combine samples from all chains into a single data frame
+mu_df_mh <- data.frame(
+  Iteration = rep(1:n_iter, times = n_chains),
+  Chain = factor(rep(1:n_chains, each = n_iter)),
+  Stock = as.vector(mu_mh[, 1, ]),
+  Bond  = as.vector(mu_mh[, 2, ]),
+  Gold  = as.vector(mu_mh[, 3, ])
+)
+
+mu_melt_mh <- melt(mu_df_mh, id.vars = c("Iteration", "Chain"))
+
+mu_trace_plots_mh <- lapply(unique(mu_melt_mh$variable), function(asset) {
+  ggplot(mu_melt_mh[mu_melt_mh$variable == asset, ], aes(x = Iteration, y = value, color = Chain)) +
+    geom_line(alpha = 0.6) +
+    labs(title = paste("MH Trace Plot for μ -", asset), y = "Value", x = "Iteration") +
+    theme_minimal()
+})
+
+grid.arrange(grobs = mu_trace_plots_mh, ncol = 1)
+
+
+```
+
+#MH Trace Plot for μ – Stock The trace plot shows that all three chains
+fluctuate around different regions with minimal overlap.
+
+Chain 1 remains mostly around the lower range (below 0), while Chain 3
+rises toward higher values (\~5).
+
+This lack of mixing and non-overlapping behavior suggests that the MH
+chains are stuck in different parts of the parameter space.
+
+The failure to stabilize around a common center indicates no convergence
+— the samples cannot be trusted to reflect the true posterior for Stock.
+
+# MH Trace Plot for μ – Bond
+
+Chains drift up or down, and by the end of 50,000 iterations, they still
+haven’t settled around a shared mean.
+
+The wide vertical spread — from below −10 to above 5 — shows high
+posterior uncertainty, but more critically, it shows inconsistency
+across chains, further confirming that convergence hasn’t been achieved.
+
+# MH Trace Plot for μ – Gold
+
+Gold’s chains appear slightly closer together than Stock or Bond, but
+convergence is still not evident.
+
+All three chains hover in distinct vertical bands, and none show signs
+of coalescing around a central value.
+
+Although fluctuations seem moderate compared to Bond, the chains'
+inability to mix properly again signals poor convergence.
+
+# Conclusion: Gibbs vs MH
+
+The MH trace plots reveal that the sampler struggled to explore the
+posterior space effectively, leading to poor chain mixing and no
+convergence. This makes MH unreliable for drawing valid inference in
+this case. In contrast, Gibbs sampling showed stable, overlapping, and
+well-mixed chains, indicating convergence and better performance.
+Therefore, for this model and dataset, Gibbs is the preferred method for
+posterior estimation of asset means.
+
+# Combined Trace Plots for Variances and Covariances (3 Chains)
+
+This chunk generates trace plots for the posterior variances and
+covariances from the Metropolis-Hastings samples across three chains.
+First, it extracts the diagonal elements of the covariance matrix (i.e.,
+variances of Stock, Bond, and Gold) and reshapes them into a long format
+suitable for plotting. It then does the same for the off-diagonal
+elements (i.e., covariances between asset pairs: Stock-Bond, Stock-Gold,
+and Bond-Gold). Finally, it uses ggplot2 to create line plots showing
+how these variance and covariance estimates evolve over iterations for
+each chain, helping visualize convergence and chain behavior.
+
+```{r}
+#  Variance Trace Data (diag of Sigma) ----
+var_df_mh <- data.frame(
+  Iteration = rep(1:n_iter, times = n_chains),
+  Chain = factor(rep(1:n_chains, each = n_iter)),
+  Stock = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[1, 1, i, chain]))),
+  Bond  = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[2, 2, i, chain]))),
+  Gold  = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[3, 3, i, chain])))
+)
+
+var_melt_mh <- melt(var_df_mh, id.vars = c("Iteration", "Chain"))
+
+var_plots_mh <- lapply(unique(var_melt_mh$variable), function(asset) {
+  ggplot(var_melt_mh[var_melt_mh$variable == asset, ],
+         aes(x = Iteration, y = value, color = Chain)) +
+    geom_line(alpha = 0.6) +
+    labs(title = paste("MH Trace Plot for Variance -", asset), y = "Variance", x = "Iteration") +
+    theme_minimal()
+})
+
+# ---- Covariance Trace Data (off-diagonal of Sigma) ----
+cov_df_mh <- data.frame(
+  Iteration = rep(1:n_iter, times = n_chains),
+  Chain = factor(rep(1:n_chains, each = n_iter)),
+  "Stock-Bond"  = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[1, 2, i, chain]))),
+  "Stock-Gold"  = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[1, 3, i, chain]))),
+  "Bond-Gold"   = as.vector(sapply(1:n_chains, function(chain) sapply(1:n_iter, function(i) Sigma_mh[2, 3, i, chain])))
+)
+
+cov_melt_mh <- melt(cov_df_mh, id.vars = c("Iteration", "Chain"))
+
+cov_plots_mh <- lapply(unique(cov_melt_mh$variable), function(pair) {
+  ggplot(cov_melt_mh[cov_melt_mh$variable == pair, ],
+         aes(x = Iteration, y = value, color = Chain)) +
+    geom_line(alpha = 0.6) +
+    labs(title = paste("MH Trace Plot for Covariance -", pair), y = "Covariance", x = "Iteration") +
+    theme_minimal()
+})
+
+# ---- Display all plots ----
+library(gridExtra)
+grid.arrange(grobs = var_plots_mh, ncol = 1)
+grid.arrange(grobs = cov_plots_mh, ncol = 1)
+
+
+```
+
+#Variance : No Convergence In all three plots, the chains fail to mix or
+stabilize, which is critical for a well-functioning MCMC method. , The
+Metropolis-Hastings algorithm did not converge, and its output cannot be
+used for valid inference in this case. Compared to Gibbs sampling, which
+showed stable and overlapping chains, MH is clearly less effective in
+estimating the variances for this model.
+
+#covariance
+
+All three trace plots show that the Metropolis-Hastings chains are
+unstable and non-stationary, with signs of drift, lack of mixing, and
+poor alignment between chains. This behavior confirms that the sampler
+failed to capture the true posterior structure of the covariances. As a
+result, any estimates derived from these samples would be unreliable. In
+contrast, the Gibbs sampler previously produced stable, well-mixed
+chains — reinforcing that Gibbs was the better algorithm for this model.
+
+#Extract Posterior Mean Estimates from MH
+
+```{r}
+# Set burn-in
+burn_in <- 10000
+
+# Combine chains after burn-in
+mu_post_mh <- do.call(rbind, lapply(1:n_chains, function(chain) mu_mh[(burn_in + 1):n_iter, , chain]))
+Sigma_post_mh <- array(NA, dim = c(p, p, (n_iter - burn_in) * n_chains))
+
+# Flatten Sigma samples across chains
+counter <- 1
+for (chain in 1:n_chains) {
+  for (i in (burn_in + 1):n_iter) {
+    Sigma_post_mh[, , counter] <- Sigma_mh[, , i, chain]
+    counter <- counter + 1
+  }
+}
+
+# Compute posterior means
+mu_mh_mean <- colMeans(mu_post_mh)
+Sigma_mh_mean <- apply(Sigma_post_mh, c(1, 2), mean)
+
+# Extract variances
+variances_mh <- diag(Sigma_mh_mean)
+names(variances_mh) <- c("Stock", "Bond", "Gold")
+
+# Extract covariances
+cov12_mh <- Sigma_mh_mean[1, 2]  # Stock-Bond
+cov13_mh <- Sigma_mh_mean[1, 3]  # Stock-Gold
+cov23_mh <- Sigma_mh_mean[2, 3]  # Bond-Gold
+
+
+
+cat("Posterior Mean of μ (Expected Returns):\n")
+print(round(mu_mh_mean, 4))
+
+cat("\nPosterior Variances:\n")
+print(round(variances_mh, 4))
+
+cat("\nPosterior Covariances:\n")
+cat("Cov(Stock, Bond):", round(cov12_mh, 4), "\n")
+cat("Cov(Stock, Gold):", round(cov13_mh, 4), "\n")
+cat("Cov(Bond, Gold):", round(cov23_mh, 4), "\n")
+
+cat("\nPosterior Covariance Matrix (Σ):\n")
+colnames(Sigma_mh_mean) <- rownames(Sigma_mh_mean) <- c("Stock", "Bond", "Gold")
+print(round(Sigma_mh_mean, 4))
+
+
+```
+
+#Posterior Mean of μ (Expected Returns):
+
+These mean estimates are very far from the Gibbs results, and especially
+unusual is the negative expected return for Bond.
+
+This reflects the instability we observed in the trace plots — the
+sampler hasn’t converged to meaningful values.
+
+Conclusion: These values are not reliable. They confirm that the MH
+chains failed to explore the posterior correctly.
+
+#Posterior Variances:
+
+These are extremely inflated, compared to the Gibbs estimates which were
+around 0.31.
+
+The upward drift in the trace plots clearly matches these huge variance
+estimates — another signal of divergence and non-convergence.
+
+Conclusion: Variance estimates are unrealistic and unusable.
+
+# Posterior Covariance
+
+These are larger in magnitude than the Gibbs results (which were close
+to 0), and all are negative.
+
+While mild negative covariance can be reasonable, these values are
+likely biased by the instability of the sampler, especially given the
+inflated variances.
+
+The diagonal elements represent the variances of Stock, Bond, and Gold,
+and are very high, indicating large instability in the MH chains.
+
+The off-diagonal elements (covariances) are negative but small,
+suggesting slight inverse co-movement — though due to lack of
+convergence, these estimates are not reliable.
+
+#Utilize the inferred distributions to simulate portfolio performance
+under various market conditions.
+
+A bull market refers to a period of sustained growth in asset prices,
+typically accompanied by strong investor confidence, economic expansion,
+and rising returns. In such environments, most asset classes tend to
+perform well, and positive correlations may increase slightly as
+optimism drives capital inflows broadly across markets.
+
+In our simulation:
+
+We assume higher expected returns for all assets to reflect market
+optimism.
+
+We keep the posterior covariance matrix (Σ) the same, assuming risk
+structure stays stable in the short term.
+
+We'll generate random multivariate returns for a 3-asset portfolio
+(Stock, Bond, Gold) using these assumptions.
+
+```{r}
+
+# Load required package
+library(MASS)
+
+# Posterior covariance matrix (from Gibbs)
+Sigma_bull <- matrix(c(
+  0.3150,  0.0001, -0.0015,
+  0.0001,  0.3171,  0.0010,
+ -0.0015,  0.0010,  0.3156
+), nrow = 3, byrow = TRUE)
+
+colnames(Sigma_bull) <- rownames(Sigma_bull) <- c("Stock", "Bond", "Gold")
+
+# Higher expected returns to reflect bullish outlook
+mu_bull <-  c(0.15, 0.10, 0.12)
+  # Stock, Bond, Gold
+
+# Simulate returns for 500 portfolios
+set.seed(123)
+returns_bull <- mvrnorm(n = 500, mu = mu_bull, Sigma = Sigma_bull)
+
+# Convert to data frame
+returns_bull_df <- as.data.frame(returns_bull)
+
+# Summary statistics
+summary(returns_bull_df)
+
+
+```
+
+#Crisis Market
+
+A crisis market is characterized by economic downturns, sharp asset
+price declines, and elevated volatility. Investors may panic or flee to
+safer assets like bonds or gold, and asset correlations can rise as
+markets crash together. Expected returns fall sharply, and risk
+perception spikes.
+
+In our simulation:
+
+We set low or negative expected returns for all assets to reflect
+pessimism.
+
+We use the same posterior covariance matrix, assuming baseline risk
+structure.
+
+The goal is to observe how a portfolio behaves when markets turn
+volatile and pessimistic.
+
+```{r}
+# Lower expected returns for crisis scenario
+mu_crisis <- c(-0.08, -0.02, -0.03)  # Stock, Bond, Gold
+
+
+Sigma_crisis <- Sigma_bull * 1.5
+
+
+# Simulate returns for 500 portfolios
+set.seed(456)
+returns_crisis <- mvrnorm(n = 500, mu = mu_crisis, Sigma = Sigma_crisis)
+
+# Convert to data frame
+returns_crisis_df <- as.data.frame(returns_crisis)
+
+# Summary statistics
+summary(returns_crisis_df)
+
+```
+
+#Density Plot for Bull Market vs Crisis Market
+
+```{r}
+# Step 1: Define equal portfolio weights for the three assets
+weights <- c(1/3, 1/3, 1/3)
+
+# Step 2: Compute portfolio returns for each simulated observation
+portfolio_return_bull <- as.vector(as.matrix(returns_bull_df[, 1:3]) %*% weights)
+portfolio_return_crisis <- as.vector(as.matrix(returns_crisis_df[, 1:3]) %*% weights)
+
+# Step 3: Combine into a data frame
+portfolio_df <- data.frame(
+  Return = c(portfolio_return_bull, portfolio_return_crisis),
+  Scenario = factor(rep(c("Bull Market", "Crisis Market"), each = 500))
+)
+
+# Step 4: Plot density
+library(ggplot2)
+ggplot(portfolio_df, aes(x = Return, fill = Scenario)) +
+  geom_density(alpha = 0.6 ,adjust = 1.5) +
+  labs(title = "Simulated Portfolio Return Distributions",
+       x = "Portfolio Return", y = "Density", fill = "Market Scenario") +
+  theme_minimal()
+
+
+```
+
+#Bull Market Analysis In the Bull Market (pink curve), the simulated
+portfolio return distribution is characterized by a high, narrow peak
+centered well into positive territory, around 0.25–0.30.
+
+This means that during a bullish economic phase, the portfolio is
+expected to deliver consistently positive returns, with most simulations
+clustered tightly around that value.
+
+The steepness and height of the peak reflect a low level of variance
+(volatility).
+
+The tight distribution indicates that returns are more predictable and
+less subject to extreme fluctuations.
+
+From an investor’s perspective, this is highly favorable — it suggests
+strong potential for reliable gains and enables confident portfolio
+planning.
+
+In such a market, even conservative allocations are likely to yield
+consistent growth, and aggressive positions may be rewarded without
+excessive downside exposure.
+
+#Crisis Market Analysis
+
+In the Crisis Market (blue curve), the return distribution is wider,
+flatter, and shifted toward zero and slightly negative values.
+
+This curve represents an economic downturn — a time when market
+confidence is low, volatility is high, and asset returns are far more
+uncertain.
+
+The flattened peak shows that returns are less concentrated: some
+portfolio outcomes fall in the gain zone, but a significant number of
+simulations show losses, even as large as –0.8 to –1.0.
+
+This distribution suggests that during a crisis, the portfolio is
+exposed to higher risk and greater downside potential.
+
+The center of the distribution hovers just below zero, meaning that
+losses are more likely than gains, and the variance of outcomes is
+large.
+
+For investors, this implies a need for risk-averse strategies,
+diversification, and potentially reallocating to safer assets like bonds
+or gold.
+
+It also highlights the importance of stress testing portfolios and using
+tools like Value-at-Risk (VaR) or expected shortfall to assess exposure
+under adverse conditions.
+
+### #CRITICAL THINKING QUESTION
+
+Decision Making: Given the posterior estimates, how would you adjust the
+portfolio? What metrics (e.g., Sharpe ratio) would you compute, and how
+does uncertainty in 𝜇 and 𝛴 affect your decisions?
+
+#Simulated Efficient Frontier Using Bayesian Posterior Estimates
+
+The simulated efficient frontier below visualizes thousands of randomly
+generated portfolios based on the Bayesian posterior estimates of
+expected returns and the covariance matrix. Each point represents a
+different combination of asset weights. The portfolios are colored by
+their Sharpe Ratio, which measures risk-adjusted return.
+
+```{r}
+# Load libraries
+library(ggplot2)
+
+# Posterior estimates
+mu <- c(0.0598, 0.0239, 0.0322)
+Sigma <- matrix(c(
+  0.3150,  0.0001, -0.0015,
+  0.0001,  0.3171,  0.0010,
+ -0.0015,  0.0010,  0.3156
+), nrow = 3, byrow = TRUE)
+
+colnames(Sigma) <- rownames(Sigma) <- c("Stock", "Bond", "Gold")
+
+# Risk-free rate (assumed)
+rf <- 0.01
+
+# Simulate random portfolios
+set.seed(123)
+n_portfolios <- 50000
+weights <- matrix(runif(n_portfolios * 3), ncol = 3)
+weights <- weights / rowSums(weights)  # normalize to sum to 1
+
+# Calculate return, risk, Sharpe ratio
+port_returns <- weights %*% mu
+port_risks <- apply(weights, 1, function(w) sqrt(t(w) %*% Sigma %*% w))
+sharpe_ratios <- (port_returns - rf) / port_risks
+
+# Create data frame
+portfolio_df <- data.frame(
+  Return = port_returns,
+  Risk = port_risks,
+  Sharpe = sharpe_ratios
+)
+
+# Plot simulated efficient frontier
+ggplot(portfolio_df, aes(x = Risk, y = Return, color = Sharpe)) +
+  geom_point(alpha = 0.7) +
+  scale_color_viridis_c(option = "viridis") +
+  labs(title = "Efficient Frontier (Bayesian Posterior)",
+       x = "Portfolio Risk (Std Dev)",
+       y = "Expected Return",
+       color = "Sharpe") +
+  theme_minimal()
+
+
+```
+
+#Top Left Curve: Low Risk, Moderate Return (Yellow-Green Zone) This
+region represents portfolios with the lowest levels of volatility
+(risk), often favored by conservative investors.
+
+These portfolios still offer moderate expected returns — typically
+between 4% and 5% — which is quite attractive given the low risk.
+
+The Sharpe Ratios are highest here (bright yellow), showing that these
+portfolios maximize return per unit of risk — ideal for risk-adjusted
+efficiency.
+
+These often include diversified allocations with lower exposure to
+volatile assets.
+
+# Top Right Curve: High Risk, High Return (Green Zone)
+
+As we move right and upward on the frontier, we see higher-risk
+portfolios with higher expected returns, approaching 6%.
+
+These are more aggressive portfolios, possibly with greater exposure to
+the Stock asset or less diversification.
+
+While returns are high, so is the standard deviation — so these
+portfolios are best suited for investors with higher risk tolerance.
+
+Sharpe Ratios here are still decent (green), but not as high as in the
+moderate-risk zone.
+
+# Middle Curve: Moderate Risk, Moderate Return (Yellowish-Green Zone)
+
+These portfolios balance return and risk — with standard deviations
+around 0.45–0.5 and returns near 5%.
+
+They offer solid risk-adjusted performance, making them suitable for
+balanced investors who want both growth and stability.
+
+Many of these portfolios lie close to the efficient frontier, meaning
+they’re optimized relative to others of similar risk.
+
+# Bottom Curve: High Risk, Low Return (Purple Zone – Suboptimal Portfolios)
+
+These points are below the frontier, where portfolios have relatively
+high risk but low return — a poor trade-off.
+
+Sharpe Ratios are low (dark purple), indicating inefficient portfolios
+that don’t compensate for the risk taken.
+
+These are dominated portfolios, and a rational investor would avoid them
+in favor of alternatives with better risk-adjusted returns.
+
+# Takeaway:
+
+This visualization reveals how portfolio performance varies depending on
+asset weightings. It empowers the investor to:
+
+Choose a strategy that aligns with their risk tolerance
+
+Maximize efficiency using the Sharpe Ratio
+
+Avoid dominated portfolios that lie below the frontier
+
+#Correlation Impact: How do the off-diagonal elements of the covariance
+matrix affect portfolio risk? Discuss how the posterior distribution
+might capture these correlations.
+
+The off-diagonal elements of the covariance matrix represent the
+covariances between pairs of assets. When standardized, these become
+correlations, and they play a crucial role in determining the overall
+risk of a portfolio.
+
+#Effect on Portfolio Risk: If asset returns are positively correlated,
+their values tend to move in the same direction. This increases
+portfolio risk, because losses in one asset are likely to coincide with
+losses in another.
+
+If asset returns are negatively correlated, they tend to move in
+opposite directions. This can reduce overall portfolio risk through
+diversification, because losses in one asset may be offset by gains in
+another.
+
+#How the Posterior Distribution Captures These Correlations
+
+In Bayesian inference, we do not assume a single fixed value for
+covariance or correlation — we infer a distribution over possible values
+based on data and prior beliefs.
+
+The posterior distribution for the covariance matrix captures not only
+the most likely correlations, but also their uncertainty.
+
+Through Gibbs or Metropolis-Hastings sampling, we draw multiple
+realizations of the covariance matrix (Σ), and each draw reflects a
+plausible market condition.
+
+By analyzing the spread and consistency of the off-diagonal elements
+across samples, we can:
+
+Identify if correlations are statistically significant.
+
+Quantify the variability of diversification potential.
+
+Understand how sensitive the portfolio risk is to changes in asset
+co-movement.
+
+#Prior Choices: Why might the Inverse-Wishart be a suitable choice for
+𝛴, and what would be the impact of choosing a different prior?
+
+#Why might the Inverse-Wishart be a suitable choice for Σ?
+
+#1. Conjugate Prior for Multivariate Normal Likelihood The
+Inverse-Wishart distribution is a conjugate prior for the covariance
+matrix of a multivariate normal distribution. This means it simplifies
+the posterior derivation, making it analytically tractable and
+computationally efficient for Gibbs sampling.
+
+#2. Encodes Prior Beliefs About Variability and Correlation The
+Inverse-Wishart allows you to incorporate prior knowledge about:
+
+Scale (overall variance through the scale matrix)
+
+Structure (prior beliefs about correlations between variables via
+off-diagonal elements) This is useful when historical market behavior or
+expert knowledge guides expectations about asset co-movements.
+
+# What would be the impact of choosing a different prior?
+
+# 1. More Flexibility but Increased Computational Complexity
+
+Alternative priors like the LKJ distribution or separate priors for
+variances and correlations offer more flexibility and can better model
+independent uncertainty in variances and correlations.
+
+However, they often require more advanced MCMC techniques (e.g.,
+Hamiltonian Monte Carlo) and come with higher computational cost.
+
+# 2. Different Priors Lead to Different Posteriors (Sensitivity)
+
+The choice of prior directly influences posterior inference, especially
+when the sample size is small. A different prior (e.g., non-conjugate or
+improper) could result in:
+
+Over- or underestimation of uncertainty in Σ
+
+A posterior that conflicts with observed data This may affect portfolio
+decisions by distorting estimated risks or correlations between assets.
+
+#CONCLUSION
+
+This Bayesian portfolio optimization study provides valuable insights
+into how investors can make informed, data-driven decisions under
+uncertainty.
+
+. The gibbs sampling analysis revealed clear investor takeaways: Stocks
+offered higher expected returns with moderate volatility, Bonds provided
+stability and lower risk, while Gold emerged as a diversifier with
+slightly less predictable behavior.
+
+These results empower investors to construct portfolios tailored to
+different risk appetites — from aggressive growth to capital
+preservation — while incorporating uncertainty in parameter estimates.
+
+Simulations under bull and crisis markets further illustrated how
+posterior distributions can guide expectations across economic regimes,
+and the efficient frontier helped visualize optimal risk-return
+combinations using the Sharpe ratio.
+
+### #CHALENGES
+
+### However, the process also revealed challenges — especially in the volatility and covariance traces, where occasional spikes and slow convergence (notably in Metropolis-Hastings chains) highlighted the sensitivity of estimates to sampling variability and prior assumptions.
+
+These findings suggest a need for careful diagnostic checks, thoughtful
+prior selection, and possibly more advanced hierarchical or shrinkage
+models in future implementations.
+
+**#FUTURE EXPANSION**
+
+Going forward, this Bayesian framework could be expanded to accommodate
+time-varying parameters, include real-world constraints (like
+transaction costs), or integrate alternative priors such as the LKJ for
+correlation structures.
+
+Overall, this study reinforces the relevance of Bayesian methods in
+financial decision-making, offering a flexible, transparent, and
+probabilistic foundation for building resilient investment strategies in
+uncertain markets.
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to
+prevent printing of the R code that generated the plot.
